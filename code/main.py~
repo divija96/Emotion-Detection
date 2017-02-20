@@ -1,0 +1,180 @@
+import cv
+import cv2
+import time
+from PIL import Image
+import numpy as np
+import csv
+import logistic
+import mouthdetection as m
+from math import sin, cos, radians
+
+WIDTH, HEIGHT = 28, 10 # all mouth images will be resized to the same size
+dim = WIDTH * HEIGHT # dimension of feature vector
+face = cv2.CascadeClassifier("/home/pooja/opencv-2.4.9/data/haarcascades/haarcascade_frontalface_default.xml")
+mask = cv2.imread('/home/pooja/pi2/img2.png')
+rows,col,mad = mask.shape
+settings = {
+    'scaleFactor': 1.3, 
+    'minNeighbors': 3, 
+    'minSize': (50, 50), 
+    'flags': cv2.cv.CV_HAAR_FIND_BIGGEST_OBJECT|cv2.cv.CV_HAAR_DO_ROUGH_SEARCH
+}
+
+def rotate_image(image, angle):
+    if angle == 0: return image
+    height, width = image.shape[:2]
+    rot_mat = cv2.getRotationMatrix2D((width/2, height/2), angle, 0.9)
+    result = cv2.warpAffine(image, rot_mat, (width, height), flags=cv2.INTER_LINEAR)
+    return result
+
+def rotate_point(pos, img, angle):
+    if angle == 0: return pos
+    x = pos[0] - img.shape[1]*0.4
+    y = pos[1] - img.shape[0]*0.4
+    newx = x*cos(radians(angle)) + y*sin(radians(angle)) + img.shape[1]*0.4
+    newy = -x*sin(radians(angle)) + y*cos(radians(angle)) + img.shape[0]*0.4
+    return int(newx), int(newy), pos[2], pos[3]
+
+"""
+pop up an image showing the mouth with a blue rectangle
+"""
+def show(area): 
+    cv.Rectangle(img,area[0][1]:area[0][1] + area[0][3], area[0][0]:area[0][0]+area[0][2],
+                    (255,0,0),2)
+    cv.NamedWindow('Face Detection', cv.CV_WINDOW_NORMAL)
+    cv.ShowImage('Face Detection', img) 
+    cv.WaitKey()
+
+"""
+given an area to be cropped, crop() returns a cropped image
+"""
+def crop(area): 
+    crop = img[area[0][1]:area[0][1] + area[0][3], area[0][0]:area[0][0]+area[0][2]] #img[y: y + h, x: x + w]
+    return crop
+
+"""
+given a jpg image, vectorize the grayscale pixels to 
+a (width * height, 1) np array
+it is used to preprocess the data and transform it to feature space
+"""
+def vectorize(filename):
+    size = WIDTH, HEIGHT # (width, height)
+    im = Image.open(filename) 
+    resized_im = im.resize(size, Image.ANTIALIAS) # resize image
+    im_grey = resized_im.convert('L') # convert the image to *greyscale*
+    im_array = np.array(im_grey) # convert to np array
+    oned_array = im_array.reshape(1, size[0] * size[1])
+    return oned_array
+if __name__ == '__main__':
+    """
+    load training data
+    """
+    # create a list for filenames of smiles pictures
+    smilefiles = []
+    with open('smiles.csv', 'rb') as csvfile:
+        for rec in csv.reader(csvfile, delimiter='	'):
+            smilefiles += rec
+
+    # create a list for filenames of neutral pictures
+    neutralfiles = []
+    with open('neutral.csv', 'rb') as csvfile:
+        for rec in csv.reader(csvfile, delimiter='	'):
+            neutralfiles += rec
+
+    # N x dim matrix to store the vectorized data (aka feature space)       
+    phi = np.zeros((len(smilefiles) + len(neutralfiles), dim))
+    # 1 x N vector to store binary labels of the data: 1 for smile and 0 for neutral
+    labels = []
+
+    # load smile data
+    PATH = "../data/smile/"
+    for idx, filename in enumerate(smilefiles):
+        phi[idx] = vectorize(PATH + filename)
+        labels.append(1)
+
+    # load neutral data    
+    PATH = "../data/neutral/"
+    offset = idx + 1
+    for idx, filename in enumerate(neutralfiles):
+        phi[idx + offset] = vectorize(PATH + filename)
+        labels.append(0)
+
+    """
+    training the data with logistic regression
+    """
+    lr = logistic.Logistic(dim)
+    lr.train(phi, labels)
+    
+
+    """
+    open webcam and capture images
+    """
+    cv2.namedWindow("preview")
+    vc = cv2.VideoCapture(0)
+    
+    
+    if vc.isOpened(): # try to get the first frame
+        rval, frame = vc.read()
+    else:
+        rval = False
+
+    print "\n\n\n\n\npress space to take picture; press ESC to exit"
+
+    while True:
+        #cv2.imshow("preview", frame)
+        rval, frame = vc.read()
+       # r,c,s = frame.shape
+        #for angle in [0,-10,-20,-30,10,20,30]:
+            #rimg = rotate_image(frame, angle)
+            #detected = face.detectMultiScale(rimg, **settings)
+            #if len(detected):
+                #detected = [rotate_point(detected[-1], frame, -angle)]
+	        #print angle
+                #break 
+        #for x, y, w, h in detected[-1:]:
+	    #print x,y,w,h
+            #cv2.rectangle(frame, (x, y), (x+h, y+w), (255,0,0), 2) 
+        #key = cv2.waitKey(40)
+        #if key == 27: # exit on ESC
+           # break
+        #if key == 32: # press space to save images
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        faces = face.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30),
+            flags=cv2.cv.CV_HAAR_SCALE_IMAGE
+        )
+
+        # Draw a rectangle around the faces
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+
+        if True:
+            cv.SaveImage("webcam.jpg", cv.fromarray(frame))
+            img = cv.LoadImage("webcam.jpg") # input image
+            mouth = m.findmouth(img)
+            smile=0
+            nosmile=0
+            #show(mouth)
+            if mouth != 2: # did not return error
+                mouthimg = crop(mouth)
+                cv.SaveImage("webcam-m.jpg", mouthimg)
+                # predict the captured emotion
+                result = lr.predict(vectorize('webcam-m.jpg'))
+                if result == 1:
+                    print "You are smiling! :-) "
+                    smile=smile+1
+                else:
+                    print "You are not smiling :-/ "
+                    nosmile=nosmile+1
+            else:
+                print "Failed to detect mouth. our face is tilted by  degrees."
+        cv2.imshow('preview', frame)
+        if cv2.waitKey(5) != -1:
+            break
+    print "The smile percentage: ", (smile*100)/(smile+nosmile)
+    print "The nosmile percentage: ", (nosmile*100)/(smile+nosmile)
+    cv2.destroyWindow("preview")
